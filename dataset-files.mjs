@@ -58,7 +58,8 @@ export function createDatasetFiles(stateDir, { databaseUrl, blobs } = {}) {
   function run(job, profiles, task = 'clean') {
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL('./dataset-worker.mjs', import.meta.url), {
-        workerData: { id:job.id, dir:folder(job.id), format:job.format, bytes:job.bytes, profiles, databaseUrl, task }
+        workerData: { id:job.id, dir:folder(job.id), sourceId:job.sourceId ?? job.id,
+          sourceDir:folder(job.sourceId ?? job.id), format:job.format, bytes:job.bytes, profiles, databaseUrl, task }
       });
       let result;
       worker.on('message', message => {

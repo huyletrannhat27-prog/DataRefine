@@ -9,7 +9,7 @@ import { readDataset } from './tabular.mjs';
 import { createRowProcessor, createTrainingRecordKey, schemaKey, toCsv } from './engine.mjs';
 import { fileNames } from './dataset-files.mjs';
 
-const { id, dir, format, bytes, profiles, databaseUrl, task } = workerData;
+const { id, dir, sourceId, sourceDir, format, bytes, profiles, databaseUrl, task } = workerData;
 let pool, blobs;
 if (databaseUrl) {
   const { openPostgres, createPostgresFiles } = await import('./postgres.mjs');
@@ -17,9 +17,9 @@ if (databaseUrl) {
   blobs = createPostgresFiles(pool);
 }
 const source = blobs ? {
-  sample:() => blobs.sample(id),
-  stream:async () => (await blobs.download(id,'original')).body
-} : join(dir,'original');
+  sample:() => blobs.sample(sourceId),
+  stream:async () => (await blobs.download(sourceId,'original')).body
+} : join(sourceDir,'original');
 const path = name => join(dir, name);
 const reportHeaders = ['ban_ghi','cot','loai','xu_ly','gia_tri_goc','gia_tri_moi'];
 const excerpt = value => typeof value === 'string' && value.length > 180 ? value.slice(0, 179) + '…' : value;
@@ -100,7 +100,21 @@ async function saveDetails(value) {
   else await writeFile(path('details.json'),details,'utf8');
 }
 
+function compactTrainingRow(row) {
+  // Prefer short fields so a long note does not make unrelated columns unusable.
+  let budget = 1024 - Buffer.byteLength(JSON.stringify(row.map(() => '')));
+  const compact = row.map(() => '');
+  const sizes = row.map((value,index) => ({ index, size:Buffer.byteLength(JSON.stringify(value)) - 2 }));
+  for (const { index, size } of sizes.sort((a,b) => a.size-b.size)) {
+    if (size > budget) break;
+    compact[index] = row[index];
+    budget -= size;
+  }
+  return compact;
+}
+
 async function splitDataset() {
+  if (!blobs) await mkdir(dir,{recursive:true});
   const partitions = {
     train:{ count:0, limit:2000, eligible:0, sample:[] },
     validation:{ count:0, limit:600, eligible:0, sample:[] },
@@ -116,26 +130,25 @@ async function splitDataset() {
         continue;
       }
       const key = recordKey(row);
-      const bucket = createHash('sha256').update(key).digest().readUInt32BE() % 100;
+      const digest = createHash('sha256').update(key).digest();
+      const bucket = digest.readUInt32BE() % 100;
       const part = bucket < 70 ? partitions.train : bucket < 85 ? partitions.validation : partitions.test;
       part.count++;
       const writing = part.sink.row(row);
       if (writing) await writing;
-      // Keep a bounded random sample for KNN. All rows still go to the exported split.
-      if (Buffer.byteLength(JSON.stringify(row)) <= 768) {
-        const position = Math.floor(Math.random() * ++part.eligible);
-        if (part.sample.length < part.limit) part.sample.push(row);
-        else if (position < part.limit) part.sample[position] = row;
-      }
+      const position = part.sample.length < part.limit ? part.sample.length : Math.floor(Math.random() * (part.eligible + 1));
+      part.eligible++;
+      if (position < part.limit) part.sample[position] = { values:compactTrainingRow(row), key:digest.toString('hex') };
     }
     for (const part of Object.values(partitions)) await part.sink.finish();
-    const counts = {}, sampled = {}, samples = {};
+    const counts = {}, sampled = {}, samples = {}, sampleKeys = {};
     for (const [name, part] of Object.entries(partitions)) {
       counts[name] = part.count;
       sampled[name] = part.sample.length;
-      samples[name] = part.sample;
+      samples[name] = part.sample.map(entry => entry.values);
+      sampleKeys[name] = part.sample.map(entry => entry.key);
     }
-    await saveDetails({ headers, samples });
+    await saveDetails({ headers, samples, sampleKeys });
     return { headers, counts, sampled };
   } finally {
     await Promise.all(Object.values(partitions).map(part => part.sink?.close()));

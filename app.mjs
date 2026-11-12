@@ -1,4 +1,4 @@
-import { FILE_LIMIT, demoFiles, evaluateHoldout, fitProfile, parseCsv, processTable, schemaKey, toCsv } from './engine.mjs';
+import { FILE_LIMIT, demoFiles, evaluateHoldout, fitProfile, fitRulesProfile, parseCsv, processTable, schemaKey, toCsv } from './engine.mjs';
 import { datasetFormat } from './tabular.mjs';
 
 const now = () => new Date().toISOString();
@@ -87,7 +87,8 @@ function jobSummary({ id, name, status, profile, version, created, updated, head
   return { id, name, status, profile, version, created, updated, headers, stats, bytes, format, error };
 }
 function publicProfile({ key, label, target, headers, version, metrics, model }) {
-  return { key, label, target, headers, version, metrics, features: model.features.map(f => f.name) };
+  return { key, label, target, headers, version, metrics, method:model ? 'knn' : 'rules',
+    targetType:model?.targetType ?? (model ? 'number' : null), features:model?.features.map(f => f.name) ?? [] };
 }
 
 async function hash(value) {
@@ -101,7 +102,7 @@ function equal(a, b) {
   return difference === 0;
 }
 
-export function createApp(storage, assets, secret, files) {
+export async function createApp(storage, assets, secret, files, starterProfiles = []) {
   let expectedToken;
   const adminToken = () => expectedToken ??= hash('datarefine-admin:v1:' + secret);
   const read = async () => (await storage.read()).state;
@@ -160,6 +161,29 @@ export function createApp(storage, assets, secret, files) {
   }
   function summary(job) {
     return { ...jobSummary(job), progress:files.progress(job.id) };
+  }
+  function reprocessWaiting(state, profiles) {
+    const bySchema = new Map(profiles.map(profile => [profile.key,profile]));
+    let count = 0;
+    for (const job of state.jobs) {
+      const profile = bySchema.get(job.key);
+      if (job.status !== 'waiting' || !profile) continue;
+      if (job.format) {
+        job.status = 'processing';
+        job.updated = now();
+      } else applyProfile(state,job,parseCsv(job.raw),profile);
+      count++;
+    }
+    return count;
+  }
+  const existing = new Set((await read()).profiles.map(profile => profile.key));
+  if (starterProfiles.some(profile => !existing.has(profile.key))) {
+    await change(state => {
+      const active = new Set(state.profiles.map(profile => profile.key));
+      const added = starterProfiles.filter(profile => !active.has(profile.key));
+      state.profiles.push(...added);
+      reprocessWaiting(state,added);
+    });
   }
   // Jobs already written to disk can resume after the server restarts.
   queueMicrotask(kickQueue);
@@ -303,13 +327,29 @@ export function createApp(storage, assets, secret, files) {
         const table = job.output ? parseCsv(job.output) : null;
         return send({ ...jobSummary(job), issues: job.issues.slice(0, 120), issueCount: job.issues.length, preview: table?.rows.slice(0, 8) ?? [] });
       }
+      if (method === 'POST' && path === '/api/admin/training-from-job') {
+        const { jobId } = await parseBody(request);
+        const entry = await change(state => {
+          const source = state.jobs.find(job => job.id === jobId && job.format && job.headers.length);
+          if (!source) fail(404,'Không tìm thấy file gốc đã đọc.');
+          const entries = state.trainingImports ??= [];
+          const existing = entries.find(item => item.sourceId === source.id && item.status !== 'failed');
+          if (existing) return existing;
+          const item = { id:token(), sourceId:source.id, name:source.name, format:source.format,
+            bytes:source.bytes, status:'processing', headers:[], created:now(), updated:now() };
+          entries.unshift(item);
+          return item;
+        });
+        kickQueue();
+        return send(entry,undefined,202);
+      }
       const splitRoute = /^\/api\/admin\/training-imports\/([a-f0-9-]{36})\/(original|train|validation|test)$/.exec(path);
       if (method === 'GET' && splitRoute) {
         const record = (await read()).trainingImports?.find(item => item.id === splitRoute[1]);
         if (!record) fail(404,'Không tìm thấy dataset huấn luyện.');
         const kind = splitRoute[2];
         if (kind !== 'original' && record.status !== 'done') fail(409,'Chưa chia xong dataset.');
-        const download = await files.download(record.id,kind);
+        const download = await files.download(kind === 'original' ? (record.sourceId ?? record.id) : record.id,kind);
         const name = kind === 'original' ? record.name : record.name.replace(/\.[^.]+$/,'') + '-' + kind + '.csv';
         headers.set('Content-Length',String(download.size));
         headers.set('Content-Disposition',filename(name));
@@ -329,30 +369,43 @@ export function createApp(storage, assets, secret, files) {
         const body = await parseBody(request);
         const label = String(body.label ?? '').trim().slice(0, 60);
         if (!label) fail(400, 'Nhập tên dạng dữ liệu.');
+        const rules = body.mode === 'rules';
+        if (body.mode != null && body.mode !== 'rules' && body.mode !== 'knn') fail(400,'Phương pháp không hợp lệ.');
         let train, validateCsv, test, trainingId, imported;
         if (body.splitId !== undefined) {
           imported = (await read()).trainingImports?.find(item => item.id === body.splitId && item.status === 'done');
           if (!imported) fail(404,'Không tìm thấy dataset đã chia.');
-          const { headers, samples } = await files.details(imported.id);
-          train = { headers, rows:samples.train };
-          validateCsv = { headers, rows:samples.validation };
-          test = { headers, rows:samples.test };
+          if (rules) train = { headers:imported.headers };
+          else {
+            const { headers, samples, sampleKeys } = await files.details(imported.id);
+            train = { headers, rows:samples.train, keys:sampleKeys?.train };
+            validateCsv = { headers, rows:samples.validation, keys:sampleKeys?.validation };
+            test = { headers, rows:samples.test, keys:sampleKeys?.test };
+          }
+        } else if (rules && body.jobId !== undefined) {
+          const job = (await read()).jobs.find(item => item.id === body.jobId && item.headers.length);
+          if (!job) fail(404,'Không tìm thấy cấu trúc của file.');
+          train = { headers:job.headers };
         } else {
           train = parseFile(body.training);
-          validateCsv = parseFile(body.validation);
-          trainingId = await hash(JSON.stringify([body.training,body.validation]));
+          if (!rules) {
+            validateCsv = parseFile(body.validation);
+            trainingId = await hash(JSON.stringify([body.training,body.validation]));
+          }
         }
         const featureNames = Array.isArray(body.features) ? body.features : [];
         const key = schemaKey(train.headers);
         const id = token(), created = now();
         let saved;
         return send(await change(async state => {
-          const profile = validate(() => fitProfile({ label, target: body.target, featureNames,
-            train, validate: validateCsv, current: state.profiles.find(p => p.key === key) }));
+          const current = state.profiles.find(p => p.key === key);
+          const profile = rules ? fitRulesProfile({ label, headers:train.headers, current })
+            : validate(() => fitProfile({ label, target:body.target, requestedType:body.targetType,
+              featureNames, train, validate:validateCsv, current }));
           if (imported) {
-            profile.metrics.holdout = validate(() => evaluateHoldout(profile,test));
+            if (!rules) profile.metrics.holdout = validate(() => evaluateHoldout(profile,test));
             profile.trainingImportId = imported.id;
-          } else {
+          } else if (!rules) {
             state.trainingSets ??= [];
             let trainingSet = state.trainingSets.find(set => set.digest === trainingId);
             if (!trainingSet) {
@@ -380,14 +433,7 @@ export function createApp(storage, assets, secret, files) {
           if ((current?.version ?? 0) + 1 !== profile.version) fail(409, 'Đã có phiên bản mới hơn. Hãy huấn luyện lại.');
           state.profiles = [profile, ...state.profiles.filter(p => p.key !== profile.key)];
           state.drafts = state.drafts.filter(d => d.id !== draft.id);
-          const waiting = state.jobs.filter(j => j.status === 'waiting' && j.key === profile.key);
-          for (const job of waiting) {
-            if (job.format) {
-              job.status = 'processing';
-              job.updated = now();
-            } else applyProfile(state, job, parseCsv(job.raw), profile);
-          }
-          return { profile: publicProfile(profile), reprocessed: waiting.length };
+          return { profile:publicProfile(profile), reprocessed:reprocessWaiting(state,[profile]) };
         });
         kickQueue();
         return send(activated);

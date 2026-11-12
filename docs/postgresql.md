@@ -23,6 +23,8 @@ DATABASE_URL chứa mật khẩu database. Chỉ đặt nó trong Environment c�
 
 Trong **Quản trị**, chọn một file và bấm **Tải lên và chia 70 / 15 / 15**. Server chấp nhận các định dạng bảng UTF-8 giống trang người dùng, tối đa 10 GiB mỗi file. Dòng có cùng nội dung sau chuẩn hóa luôn vào cùng một tập. Tỷ lệ tính theo nhóm nên là xấp xỉ, đặc biệt với file nhỏ hoặc có nhiều dòng lặp.
 
-Khi trạng thái là **Đã chia**, tải riêng CSV train, validation hoặc test, hoặc bấm **Dùng để huấn luyện** và chọn cột số cần điền. Train dùng để xây mô hình. Validation dùng để so với phương pháp trung vị và mô hình hiện tại trước khi kích hoạt. Kết quả trên tập test được báo riêng.
+Khi trạng thái là **Đã chia**, tải riêng CSV train, validation hoặc test, hoặc bấm **Dùng để huấn luyện** và chọn phương pháp. KNN có thể điền cột số, nhãn hoặc ngày ISO / ngày-tháng-năm có năm bốn chữ số. Train dùng để xây mô hình. Validation so sai số với trung vị cho số và ngày, hoặc nhãn phổ biến nhất cho nhãn. Nếu có mô hình hiện tại cùng cột và kiểu mục tiêu, hệ thống cũng so với mô hình đó. Kết quả trên tập test được báo riêng.
 
-Ba CSV chứa toàn bộ bản ghi. Để giới hạn RAM và thời gian dự đoán của KNN, server lấy tối đa 2.000 dòng train, 600 dòng validation và 600 dòng test để tính toán. Chỉ các dòng có bản biểu diễn mẫu tối đa 768 byte được đưa vào nhóm lấy mẫu; các dòng dài vẫn có trong CSV đã chia. Chọn dataset có đủ bản ghi hợp lệ cho cột mục tiêu và các cột đầu vào.
+Ba CSV chứa toàn bộ bản ghi. Để giới hạn RAM và thời gian dự đoán của KNN, server lấy tối đa 2.000 dòng train, 600 dòng validation và 600 dòng test để tính toán. Bản ghi lấy mẫu có ngân sách 1 KiB. Hệ thống giữ các ô ngắn trước. Các ô dài vượt ngân sách vẫn nằm trong CSV đầy đủ. Chọn dataset có đủ bản ghi hợp lệ cho cột mục tiêu và các cột đầu vào.
+
+Với file đã vào **Hàng chờ xử lý**, admin có thể bấm **Đưa vào huấn luyện** để chia file gốc mà không phải tải xuống rồi tải lại. Nếu dataset thiếu mẫu hoặc chỉ cần chuẩn hóa định dạng, bấm **Tạo quy tắc làm sạch** rồi kích hoạt. Quy tắc chuẩn hóa ngày ở các cột ngày thông dụng, bỏ dòng trùng và báo ô trống để kiểm tra.

@@ -78,110 +78,184 @@ export function createTrainingRecordKey(headers) {
   return row => JSON.stringify(ordered.map(col => valueAt(table,row,col)));
 }
 
-function examples(table, target, features) {
+const DAY = 86400000;
+const dateNumber = value => {
+  const date = normalDate(value);
+  return date ? Date.parse(date + 'T00:00:00Z') / DAY : NaN;
+};
+const targetType = profile => profile.model?.targetType ?? 'number';
+const getTarget = (value, type) => type === 'category' ? (blank(value) ? null : value.normalize('NFC'))
+  : type === 'date' ? dateNumber(value) : number(value);
+const validTarget = value => value !== null && (typeof value === 'string' || Number.isFinite(value));
+
+function examples(table, target, features, type) {
   const key = createTrainingRecordKey(table.headers);
-  return table.rows.map(row => ({
-    x: features.map(col => valueAt(table, row, col)),
-    y: number(valueAt(table, row, target)),
-    record: key(row)
-  })).filter(s => Number.isFinite(s.y) && s.x.every(v => !blank(v)));
+  const targetIndex = table.headers.indexOf(target);
+  return table.rows.map((row, index) => ({
+    x:features.map(col => valueAt(table,row,col)),
+    y:getTarget(row[targetIndex]?.trim() ?? '',type),
+    record:table.keys?.[index] ?? key(row)
+  })).filter(row => validTarget(row.y) && row.x.every(v => !blank(v)));
 }
 
 function encode(features, x) {
-  return x.map((value, i) => features[i].numeric ? number(value) : category(value));
+  return x.map((value,i) => features[i].date ? dateNumber(value)
+    : features[i].numeric ? number(value) : category(value));
 }
 
-function infer(model, input, allowFallback = false) {
-  const x = encode(model.features, input);
-  if (input.some(blank) || x.some(v => typeof v === 'number' && !Number.isFinite(v)))
-    return allowFallback ? model.median : null;
-  if (model.features.some((f, i) => !f.numeric && !f.values.includes(x[i])))
-    return allowFallback ? model.median : null;
-  let min = Infinity;
+function majority(weighted) {
+  const votes = new Map();
+  for (const { value, weight } of weighted) votes.set(value,(votes.get(value) ?? 0) + weight);
+  let best, highest = -Infinity;
+  for (const [value, score] of votes) {
+    if (score > highest || (score === highest && value < best)) {
+      highest = score;
+      best = value;
+    }
+  }
+  return best;
+}
+
+function infer(model, input) {
+  const x = encode(model.features,input);
+  if (input.some(blank) || x.some(v => typeof v === 'number' && !Number.isFinite(v))) return null;
+  if (model.features.some((f,i) => !f.numeric && !f.values.includes(x[i]))) return null;
   const best = [];
   for (const sample of model.samples) {
     let distance = 0;
-    for (let i = 0; i < x.length; i++) {
+    for (let i=0; i<x.length; i++) {
       const f = model.features[i];
       distance += f.numeric ? Math.abs(x[i] - sample.x[i]) / f.span : Number(x[i] !== sample.x[i]);
     }
-    min = Math.min(min, distance);
     if (best.length === 3 && distance >= best[2].distance) continue;
-    best.push({ distance, y: sample.y });
-    best.sort((a, b) => a.distance - b.distance);
+    best.push({ distance, y:sample.y });
+    best.sort((a,b) => a.distance - b.distance);
     if (best.length > 3) best.pop();
   }
-  if (min > 0.65) return allowFallback ? model.median : null;
+  const min = best[0].distance;
+  if (min > 0.65) return null;
   const selected = min === 0 ? best.filter(n => n.distance === 0) : best;
-  const sum = selected.reduce((v, n) => v + n.y / (n.distance + 0.01), 0);
-  const weight = selected.reduce((v, n) => v + 1 / (n.distance + 0.01), 0);
+  const weighted = selected.map(n => ({ value:n.y, weight:1 / (n.distance + 0.01) }));
+  if (model.targetType === 'category') return majority(weighted);
+  const sum = weighted.reduce((v,n) => v + n.value * n.weight,0);
+  const weight = weighted.reduce((v,n) => v + n.weight,0);
   return round(sum / weight, model.integer ? 0 : 2);
 }
 
-export function fitProfile({ label, target, featureNames, train, validate, current }) {
-  if (schemaKey(train.headers) !== schemaKey(validate.headers)) throw Error('File kiểm thử cần có cùng các cột với file huấn luyện.');
-  if (!train.headers.includes(target) || dayColumn.test(target)) throw Error('Chọn cột số cần điền.');
-  const cols = featureNames.length ? [...new Set(featureNames)] : train.headers.filter(c => c !== target);
-  if (cols.includes(target) || cols.some(c => !train.headers.includes(c))) throw Error('Cột đầu vào không hợp lệ.');
-  const all = [...new Map(examples(train, target, cols).map(s => [s.record, s])).values()];
-  const check = [...new Map(examples(validate, target, cols).map(s => [s.record, s])).values()];
-  if (all.length < 12 || check.length < 5) throw Error('Cần tối thiểu 12 bản ghi huấn luyện và 5 bản ghi kiểm thử khác nhau, đầy đủ cột mục tiêu và cột đầu vào.');
-  const trainRecords = new Set(all.map(s => s.record));
-  if (check.some(s => trainRecords.has(s.record))) throw Error('Phát hiện bản ghi trùng giữa tập huấn luyện và tập kiểm thử.');
-  const features = cols.map((name, i) => {
-    const values = all.map(s => s.x[i]);
-    const nums = values.map(number);
-    return nums.every(Number.isFinite) && !/(^|_)ma_|(^|_)id$/.test(name)
-      ? { name, numeric: true, span: Math.max(1, Math.max(...nums) - Math.min(...nums)) }
-      : { name, numeric: false, values: [...new Set(values.map(category))] };
-  });
-  const ys = all.map(s => s.y).sort((a, b) => a - b);
-  const median = (ys[Math.floor(ys.length / 2)] + ys[Math.floor((ys.length - 1) / 2)]) / 2;
-  const model = {
-    features, median, integer: ys.every(Number.isInteger), nonnegative: ys[0] >= 0,
-    samples: all.map(s => ({ x: encode(features, s.x), y: s.y }))
-  };
-  const predictions = check.map(s => infer(model, s.x));
-  const mae = predictions.reduce((v, n, i) => v + Math.abs((n ?? median) - check[i].y), 0) / check.length;
-  const baseline = check.reduce((v, s) => v + Math.abs(s.y - median), 0) / check.length;
-  let previous = null;
-  if (current) {
-    if (current.target !== target) throw Error('Bản cập nhật phải giữ nguyên cột mục tiêu của dạng dữ liệu.');
-    const test = examples(validate, target, current.model.features.map(f => f.name));
-    const byRecord = new Map(test.map(s => [s.record, s]));
-    previous = check.reduce((v, s) => {
-      const record = byRecord.get(s.record);
-      const prediction = record ? infer(current.model, record.x, true) : current.model.median;
-      return v + Math.abs(s.y - prediction);
-    }, 0) / check.length;
+function inferTargetType(table, column, requested) {
+  if (['number','category','date'].includes(requested)) return requested;
+  if (requested != null && requested !== 'auto') throw Error('Loại cột mục tiêu không hợp lệ.');
+  const i = table.headers.indexOf(column);
+  const values = table.rows.map(row => row[i]?.trim() ?? '').filter(v => !blank(v));
+  const looksLike = parse => values.length > 0 &&
+    values.filter(value => Number.isFinite(parse(value))).length >= Math.ceil(values.length * 0.9);
+  if (looksLike(dateNumber)) return 'date';
+  if (looksLike(number)) return 'number';
+  return 'category';
+}
+
+function baselineValue(model) {
+  return model.targetType === 'category' ? model.mode : model.median;
+}
+
+function evaluate(model, rows) {
+  let error = 0, baseline = 0, predicted = 0;
+  const fallback = baselineValue(model);
+  for (const row of rows) {
+    const value = infer(model,row.x);
+    if (value !== null) predicted++;
+    if (model.targetType === 'category') {
+      error += Number(category(value ?? fallback) !== category(row.y));
+      baseline += Number(category(fallback) !== category(row.y));
+    } else {
+      error += Math.abs((value ?? fallback) - row.y);
+      baseline += Math.abs(fallback - row.y);
+    }
   }
-  const coverage = predictions.filter(x => x !== null).length / check.length;
-  const eligible = coverage >= 0.6 && mae <= baseline + 1e-9 && (previous === null || mae <= previous + 1e-9);
+  const scale = model.targetType === 'category' ? 100 : 1;
+  return { error:scale * error / rows.length, baseline:scale * baseline / rows.length, coverage:predicted / rows.length };
+}
+
+function metricFields(model, error) {
+  return model.targetType === 'category' ? { errorRate:round(error,3) } : { mae:round(error,3) };
+}
+
+export function fitRulesProfile({ label, headers, current }) {
   return {
-    label, headers: train.headers, key: schemaKey(train.headers), target,
-    version: (current?.version ?? 0) + 1, model,
-    metrics: { mae: round(mae, 3), baseline: round(baseline, 3), previous: previous === null ? null : round(previous, 3),
-      coverage: round(coverage * 100, 1), train: all.length, test: check.length, eligible }
+    label, headers, key:schemaKey(headers), target:null, method:'rules', model:null,
+    version:(current?.version ?? 0) + 1, metrics:{ eligible:true }
+  };
+}
+
+export function fitProfile({ label, target, featureNames, train, validate, current, requestedType }) {
+  if (schemaKey(train.headers) !== schemaKey(validate.headers)) throw Error('Tập validation cần có cùng các cột với tập train.');
+  if (!train.headers.includes(target)) throw Error('Chọn cột mục tiêu cần điền.');
+  const type = inferTargetType(train,target,requestedType);
+  const cols = featureNames.length ? [...new Set(featureNames)] : train.headers.filter(c => c !== target);
+  if (!cols.length || cols.includes(target) || cols.some(c => !train.headers.includes(c))) throw Error('Chọn cột đầu vào khác cột mục tiêu.');
+  const all = [...new Map(examples(train,target,cols,type).map(s => [s.record,s])).values()];
+  const check = [...new Map(examples(validate,target,cols,type).map(s => [s.record,s])).values()];
+  if (all.length < 12 || check.length < 5) throw Error('Cần ít nhất 12 dòng train và 5 dòng validation khác nhau có đủ giá trị. Hãy đổi cột hoặc chọn Làm sạch theo quy tắc.');
+  const trainRecords = new Set(all.map(s => s.record));
+  if (check.some(s => trainRecords.has(s.record))) throw Error('Phát hiện bản ghi trùng giữa tập train và validation.');
+  const features = cols.map((name,i) => {
+    const values = all.map(s => s.x[i]);
+    const dates = values.map(dateNumber);
+    const nums = values.map(number);
+    if (dates.every(Number.isFinite)) return { name, date:true, numeric:true, span:Math.max(1,Math.max(...dates)-Math.min(...dates)) };
+    if (nums.every(Number.isFinite) && !/(^|_)ma_|(^|_)id$/.test(name))
+      return { name, numeric:true, span:Math.max(1,Math.max(...nums)-Math.min(...nums)) };
+    return { name, numeric:false, values:[...new Set(values.map(category))] };
+  });
+  const model = { targetType:type, features, samples:all.map(s => ({ x:encode(features,s.x), y:s.y })) };
+  if (type === 'category') {
+    const representatives = new Map();
+    const normalized = all.map(s => {
+      const value = category(s.y);
+      if (!representatives.has(value)) representatives.set(value,s.y);
+      return { value, weight:1 };
+    });
+    model.mode = representatives.get(majority(normalized));
+    for (const sample of model.samples) sample.y = representatives.get(category(sample.y));
+  } else {
+    const ys = all.map(s => s.y).sort((a,b) => a-b);
+    model.median = (ys[Math.floor(ys.length/2)] + ys[Math.floor((ys.length-1)/2)]) / 2;
+    model.integer = type === 'date' || ys.every(Number.isInteger);
+    model.nonnegative = type === 'number' && ys[0] >= 0;
+  }
+  const score = evaluate(model,check);
+  let previous = null;
+  if (current?.model && current.target === target && targetType(current) === type) {
+    const byRecord = new Map(examples(validate,target,current.model.features.map(f => f.name),type).map(s => [s.record,s]));
+    // An empty feature vector with missing values makes the existing model use its evaluation baseline.
+    const previousRows = check.map(row => byRecord.get(row.record) ??
+      { y:row.y, x:current.model.features.map(() => '') });
+    previous = evaluate(current.model,previousRows).error;
+  }
+  const eligible = score.coverage >= 0.6 && score.error <= score.baseline + 1e-9 &&
+    (previous === null || score.error <= previous + 1e-9);
+  return {
+    label, headers:train.headers, key:schemaKey(train.headers), target, method:'knn', model,
+    version:(current?.version ?? 0) + 1,
+    metrics:{ ...metricFields(model,score.error), baseline:round(score.baseline,3),
+      previous:previous === null ? null : round(previous,3),
+      coverage:round(score.coverage * 100,1), train:all.length, test:check.length, eligible }
   };
 }
 
 export function evaluateHoldout(profile, table) {
   const { target, model } = profile;
-  const features = model.features.map(f => f.name);
-  const rows = [...new Map(examples(table,target,features).map(row => [row.record,row])).values()];
-  if (rows.length < 5) throw Error('Tập test cần tối thiểu 5 bản ghi khác nhau có đủ cột mục tiêu và cột đầu vào.');
-  let error = 0, predicted = 0;
-  for (const row of rows) {
-    const value = infer(model,row.x);
-    if (value !== null) predicted++;
-    error += Math.abs((value ?? model.median) - row.y);
-  }
-  return { rows:rows.length, mae:round(error / rows.length,3), coverage:round(predicted * 100 / rows.length,1) };
+  const rows = [...new Map(examples(table,target,model.features.map(f => f.name),targetType(profile))
+    .map(row => [row.record,row])).values()];
+  if (rows.length < 5) throw Error('Tập test cần ít nhất 5 dòng hợp lệ khác nhau. Hãy đổi cột hoặc dùng quy tắc.');
+  const score = evaluate(model,rows);
+  return { rows:rows.length, ...metricFields(model,score.error), coverage:round(score.coverage * 100,1) };
 }
 
 export function createRowProcessor(headers, profile, isDuplicate) {
   const stats = { rows: 0, missing: 0, filled: 0, unresolved: 0, duplicates: 0 };
   const table = { headers };
+  const type = targetType(profile ?? {});
   function processRow(original) {
     stats.rows++;
     const issues = [];
@@ -198,7 +272,7 @@ export function createRowProcessor(headers, profile, isDuplicate) {
         return;
       }
       if (original[i] !== value && profile) report(column, 'Khoảng trắng', 'Đã chuẩn hóa', value, original[i]);
-      if (dayColumn.test(column) && profile) {
+      if (profile && (dayColumn.test(column) || (column === profile.target && type === 'date'))) {
         const date = normalDate(value);
         if (!date) pending.push({ column, i, kind: 'Ngày không hợp lệ' });
         else if (value !== date) {
@@ -206,7 +280,7 @@ export function createRowProcessor(headers, profile, isDuplicate) {
           report(column, 'Định dạng ngày', 'Đã chuẩn hóa', date, value);
         }
       }
-      if (column === profile?.target && (!Number.isFinite(number(value)) || (profile.model.nonnegative && number(value) < 0))) {
+      if (profile?.model && column === profile.target && type === 'number' && (!Number.isFinite(number(value)) || (profile.model.nonnegative && number(value) < 0))) {
         pending.push({ column, i, kind: 'Giá trị số không hợp lệ' });
       }
     });
@@ -216,15 +290,16 @@ export function createRowProcessor(headers, profile, isDuplicate) {
         report(item.column, item.kind, 'Dòng trùng đã loại');
         continue;
       }
-      const canFill = item.column === profile?.target && item.kind === 'Ô trống';
+      const canFill = profile?.model && item.column === profile.target && item.kind === 'Ô trống';
       const guess = canFill ? infer(profile.model, profile.model.features.map(f => valueAt(table, row, f.name))) : null;
       if (guess === null) {
         stats.unresolved++;
         report(item.column, item.kind, profile ? 'Cần kiểm tra' : 'Chờ hỗ trợ', '', row[item.i]);
       } else {
         stats.filled++;
-        row[item.i] = String(guess);
-        report(item.column, item.kind, 'Đã ước lượng', guess);
+        const value = type === 'date' ? new Date(guess * DAY).toISOString().slice(0,10) : String(guess);
+        row[item.i] = value;
+        report(item.column, item.kind, 'Đã ước lượng', type === 'number' ? guess : value);
       }
     }
     if (duplicate) {

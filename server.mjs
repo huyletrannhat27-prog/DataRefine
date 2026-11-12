@@ -56,7 +56,8 @@ if (databaseUrl) {
   storage = await createPostgresState(openPostgres(databaseUrl), seedState());
   blobs = createPostgresFiles(openPostgres(databaseUrl, 8));
 } else storage = createLocalState();
-const app = createApp(storage, assets, secret, createDatasetFiles(stateDir, { databaseUrl, blobs }));
+const starterProfiles = JSON.parse(readFileSync(new URL('./models/kaggle-profiles.json',import.meta.url),'utf8'));
+const app = await createApp(storage,assets,secret,createDatasetFiles(stateDir,{ databaseUrl, blobs }),starterProfiles);
 // Large uploads can take more than the default five minutes; idle sockets still expire.
 const server = createServer({ requestTimeout:0 }, async (req, res) => {
   try {
