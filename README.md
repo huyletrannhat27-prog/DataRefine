@@ -1,5 +1,9 @@
 # DataRefine
 
+**[Dùng thử DataRefine trên Render](https://datarefine-0dhe.onrender.com/)**
+
+Mở web và chọn mẫu **Bán hàng** để thử xử lý dữ liệu và tải CSV kết quả.
+
 Ứng dụng web xử lý dữ liệu dạng bảng, có thể chạy trên máy hoặc triển khai trên Render. File có cấu trúc đã được hỗ trợ sẽ được xử lý tự động. File thuộc dạng mới vào hàng chờ và được chạy lại khi admin kích hoạt mô hình phù hợp.
 
 ## Chạy trên máy
