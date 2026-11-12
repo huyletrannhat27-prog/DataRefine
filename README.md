@@ -1,17 +1,29 @@
 # DataRefine
 
-Ứng dụng web chạy trên máy để xử lý dữ liệu dạng bảng. File có cấu trúc đã được hỗ trợ sẽ được xử lý tự động. File thuộc dạng mới vào hàng chờ và được chạy lại khi admin kích hoạt mô hình phù hợp.
+Ứng dụng web xử lý dữ liệu dạng bảng, có thể chạy trên máy hoặc triển khai trên Render. File có cấu trúc đã được hỗ trợ sẽ được xử lý tự động. File thuộc dạng mới vào hàng chờ và được chạy lại khi admin kích hoạt mô hình phù hợp.
 
 ## Chạy trên máy
 
-Cần Node.js 24 trở lên. Không cần cài thư viện hay kết nối dịch vụ bên ngoài.
+Cần Node.js 24. Không cần cài thư viện hay kết nối dịch vụ bên ngoài.
 
 - Trên Windows, nhấp đúp **Khoi-dong.cmd**, hoặc mở terminal tại thư mục repo và chạy **npm start**.
 - Mở **http://127.0.0.1:4318** trong trình duyệt.
-- Khi vào **Quản trị**, nhập mã hiển thị trong cửa sổ đang chạy server.
+- Khi vào **Quản trị**, nhập mã hiển thị trong cửa sổ đang chạy server hoặc mã bạn đặt trong biến môi trường.
 - File gốc, CSV kết quả và báo cáo được lưu trong **.datarefine/datasets/**. Thông tin công việc, thông báo và mô hình được lưu trong **.datarefine/state.json**. Git bỏ qua thư mục này. Đóng cửa sổ server hoặc nhấn **Ctrl+C** để dừng.
 
 Có thể đặt các biến môi trường **DATAREFINE_PORT**, **DATAREFINE_STATE_DIR** và **DATAREFINE_ADMIN** để thay đổi cổng, thư mục dữ liệu và mã quản trị.
+
+## Deploy lên Render
+
+1. Trong [Render Dashboard](https://dashboard.render.com/), chọn **New → Web Service**. Kết nối GitHub, chọn repo **DataRefine** và nhánh **main**.
+2. Chọn runtime **Node**, để trống **Root Directory**, đặt **Build Command** là `npm install` và **Start Command** là `npm start`.
+3. Trong **Environment Variables**, đặt `NODE_VERSION=24.18.0` và `DATAREFINE_ADMIN` bằng một mã quản trị mạnh do bạn tự chọn. Render cấp sẵn `PORT` và `RENDER_EXTERNAL_URL`.
+4. Để demo với dữ liệu mẫu, chọn **Free**. Để giữ dữ liệu qua lần khởi động lại hoặc deploy, dùng instance trả phí có **Persistent Disk** gắn tại `/var/data` và đặt `DATAREFINE_STATE_DIR=/var/data`. Dung lượng đĩa phải đủ cho file gốc, kết quả, báo cáo và phần xử lý tạm.
+5. Khi dịch vụ báo **Live**, mở URL `onrender.com` do Render cấp, chọn mẫu **Bán hàng** và kiểm tra CSV kết quả. Vào **Quản trị** bằng mã đã đặt ở bước 3.
+
+Luồng xử lý 10 GiB đã được kiểm thử cục bộ. Hãy thử tăng dần kích thước file trên Render để kiểm tra việc truyền qua mạng và dung lượng đĩa của instance thực tế.
+
+[Hướng dẫn Web Service](https://render.com/docs/web-services) · [Hướng dẫn Persistent Disk](https://render.com/docs/disks)
 
 ## Thử toàn bộ luồng
 
