@@ -17,18 +17,6 @@ Cần Node.js 24. Không cần cài thư viện hay kết nối dịch vụ bên
 
 Có thể đặt các biến môi trường **DATAREFINE_PORT**, **DATAREFINE_STATE_DIR** và **DATAREFINE_ADMIN** để thay đổi cổng, thư mục dữ liệu và mã quản trị.
 
-## Deploy lên Render
-
-1. Trong [Render Dashboard](https://dashboard.render.com/), chọn **New → Web Service**. Kết nối GitHub, chọn repo **DataRefine** và nhánh **main**.
-2. Chọn runtime **Node**, để trống **Root Directory**, đặt **Build Command** là `npm install` và **Start Command** là `npm start`.
-3. Trong **Environment Variables**, đặt `NODE_VERSION=24.18.0` và `DATAREFINE_ADMIN` bằng một mã quản trị mạnh do bạn tự chọn. Render cấp sẵn `PORT` và `RENDER_EXTERNAL_URL`.
-4. Để demo với dữ liệu mẫu, chọn **Free**. Để giữ dữ liệu qua lần khởi động lại hoặc deploy, dùng instance trả phí có **Persistent Disk** gắn tại `/var/data` và đặt `DATAREFINE_STATE_DIR=/var/data`. Dung lượng đĩa phải đủ cho file gốc, kết quả, báo cáo và phần xử lý tạm.
-5. Khi dịch vụ báo **Live**, mở URL `onrender.com` do Render cấp, chọn mẫu **Bán hàng** và kiểm tra CSV kết quả. Vào **Quản trị** bằng mã đã đặt ở bước 3.
-
-Luồng xử lý 10 GiB đã được kiểm thử cục bộ. Hãy thử tăng dần kích thước file trên Render để kiểm tra việc truyền qua mạng và dung lượng đĩa của instance thực tế.
-
-[Hướng dẫn Web Service](https://render.com/docs/web-services) · [Hướng dẫn Persistent Disk](https://render.com/docs/disks)
-
 ## Thử toàn bộ luồng
 
 1. Chọn mẫu **Bán hàng** ở trang chính. Web tạo CSV kết quả và báo cáo, trong đó có ô đã ước lượng, ô cần kiểm tra, ngày đã chuẩn hóa và dòng trùng đã loại.
