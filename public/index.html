@@ -1,0 +1,28 @@
+
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Làm sạch dữ liệu bảng tự động, theo dõi lỗi dữ liệu và mở rộng mô hình khi gặp cấu trúc mới.">
+  <title>DataRefine — Xử lý dữ liệu</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/ui.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="nav wrap">
+      <a class="brand" href="/" aria-label="DataRefine, trang chính"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>DataRefine</a>
+      <nav aria-label="Điều hướng chính">
+        <a class="nav-link" id="workspace-link" href="/">Xử lý dữ liệu</a>
+        <a class="nav-link" id="admin-link" href="/admin">Quản trị</a>
+      </nav>
+      <button type="button" class="notice-link" id="notices-button">Thông báo <span id="notice-count" hidden></span></button>
+    </div>
+  </header>
+  <main class="wrap" id="main" aria-live="off"><p>Đang tải…</p></main>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div class="dialog-shell"><header><h2 id="dialog-title"></h2><button id="dialog-close" class="button neutral" type="button" aria-label="Đóng">Đóng</button></header><div id="dialog-body"></div></div></dialog>
+  <div id="toast" role="status" hidden></div>
+  <footer class="wrap footer"><span>DataRefine</span><span>Tiền xử lý dữ liệu dạng bảng</span></footer>
+</body>
+</html>
