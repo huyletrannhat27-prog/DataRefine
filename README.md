@@ -17,6 +17,8 @@ Cần Node.js 24. Không cần cài thư viện hay kết nối dịch vụ bên
 
 Có thể đặt các biến môi trường **DATAREFINE_PORT**, **DATAREFINE_STATE_DIR** và **DATAREFINE_ADMIN** để thay đổi cổng, thư mục dữ liệu và mã quản trị.
 
+Khi cần lưu dữ liệu bằng SQL, xem [cách kết nối PostgreSQL](docs/postgresql.md) và luồng tự chia train, validation, test.
+
 ## Thử toàn bộ luồng
 
 1. Chọn mẫu **Bán hàng** ở trang chính. Web tạo CSV kết quả và báo cáo, trong đó có ô đã ước lượng, ô cần kiểm tra, ngày đã chuẩn hóa và dòng trùng đã loại.
@@ -39,7 +41,7 @@ Chọn hoặc kéo thả nhiều file cùng lúc. Web tải lên lần lượt, 
 
 - Tối đa **10 GiB mỗi file**, từ 2 đến 128 cột, mỗi bản ghi tối đa khoảng 1 Mi ký tự. File được đọc và ghi theo từng khối. Dung lượng đĩa cần có còn phụ thuộc vào file gốc, CSV kết quả, báo cáo lỗi và chỉ mục tạm để kiểm tra dòng trùng.
 - Mở trang lịch sử để theo dõi tiến độ. Có thể đóng trình duyệt sau khi tải lên hoàn tất nếu server vẫn chạy. Nếu server khởi động lại, các file đã nhận xong nhưng chưa xử lý xong được xử lý lại từ đầu.
-- Bộ file huấn luyện và kiểm thử của admin vẫn là CSV mẫu nhỏ, tối đa 200 KB và 1.200 bản ghi mỗi file. Giới hạn 10 GiB áp dụng cho file đưa vào xử lý.
+- Admin có thể upload một dataset tối đa 10 GiB để chia tự động thành train, validation và test. Chế độ nhập hai CSV riêng hỗ trợ tối đa 200 KB và 1.200 bản ghi mỗi file.
 - Hệ thống nhận dạng theo tập tên cột đã chuẩn hóa. Với mỗi cấu trúc, mô hình KNN ước lượng giá trị thiếu cho một cột số mục tiêu. Các ô chưa đủ dữ liệu để ước lượng được đánh dấu trong báo cáo.
 - Admin huấn luyện từ CSV có giá trị đã xác minh và dùng một CSV khác để kiểm thử. Mô hình phải ước lượng được ít nhất 60% mẫu kiểm thử, đồng thời MAE phải bằng hoặc thấp hơn phương pháp trung vị và mô hình hiện tại nếu có. MAE tính trung vị cho mẫu mô hình từ chối. File kết quả giữ nguyên các ô bị từ chối và ghi chúng trong báo cáo.
 - Dữ liệu bán hàng và kho là dữ liệu giả lập để thử luồng. Thông báo xuất hiện trong web. Lịch sử người dùng gắn với trình duyệt.

@@ -21,10 +21,10 @@ export function normalizeHeaders(row) {
   return headers;
 }
 
-async function* textChunks(path, onRead) {
+async function* textChunks(stream, onRead) {
   const decoder = new TextDecoder('utf-8', { fatal: true });
   let bytes = 0;
-  for await (const chunk of createReadStream(path, { highWaterMark: 256 * 1024 })) {
+  for await (const chunk of stream) {
     bytes += chunk.length;
     onRead(bytes);
     let text;
@@ -39,25 +39,29 @@ async function* textChunks(path, onRead) {
   } catch { throw Error('Tệp không dùng mã hóa UTF-8 hợp lệ.'); }
 }
 
-async function chooseDelimiter(path) {
+async function localSample(path) {
   const file = await open(path);
   try {
     const buffer = Buffer.alloc(128 * 1024);
     const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-    const sample = buffer.toString('utf8', 0, bytesRead).trimStart();
-    const counts = new Map([[',', 0], ['\t', 0], [';', 0], ['|', 0]]);
-    let quoted = false;
-    for (const c of sample) {
-      if (c === '"') quoted = !quoted;
-      if (quoted) continue;
-      if (c === '\r' || c === '\n') break;
-      if (counts.has(c)) counts.set(c, counts.get(c) + 1);
-    }
-    const candidates = [...counts].sort((a, b) => b[1] - a[1]);
-    if (!candidates[0][1] || candidates[0][1] === candidates[1][1])
-      throw Error('Không xác định được dấu phân cách trong tiêu đề. Hãy dùng CSV, TSV hoặc TXT có dấu phân cách rõ ràng.');
-    return candidates[0][0];
+    return buffer.subarray(0,bytesRead);
   } finally { await file.close(); }
+}
+
+function chooseDelimiter(buffer) {
+  const sample = buffer.toString('utf8').trimStart();
+  const counts = new Map([[',', 0], ['\t', 0], [';', 0], ['|', 0]]);
+  let quoted = false;
+  for (const c of sample) {
+    if (c === '"') quoted = !quoted;
+    if (quoted) continue;
+    if (c === '\r' || c === '\n') break;
+    if (counts.has(c)) counts.set(c, counts.get(c) + 1);
+  }
+  const candidates = [...counts].sort((a, b) => b[1] - a[1]);
+  if (!candidates[0][1] || candidates[0][1] === candidates[1][1])
+    throw Error('Không xác định được dấu phân cách trong tiêu đề. Hãy dùng CSV, TSV hoặc TXT có dấu phân cách rõ ràng.');
+  return candidates[0][0];
 }
 
 async function* delimitedRows(chunks, delimiter) {
@@ -179,9 +183,12 @@ async function* jsonRows(chunks) {
   }
 }
 
-export async function* readDataset(path, format, onRead = () => {}) {
-  const chunks = textChunks(path, onRead);
-  const delimiter = format === 'TXT' || format === 'CSV' ? await chooseDelimiter(path) : '\t';
+export async function* readDataset(input, format, onRead = () => {}) {
+  const source = typeof input === 'string'
+    ? { sample:() => localSample(input), stream:() => createReadStream(input,{ highWaterMark:256 * 1024 }) }
+    : input;
+  const delimiter = format === 'TXT' || format === 'CSV' ? chooseDelimiter(await source.sample()) : '\t';
+  const chunks = textChunks(await source.stream(), onRead);
   const records = format === 'JSONL' ? jsonRows(chunks) : delimitedRows(chunks, delimiter);
   let headers, count = 0;
   for await (const row of records) {

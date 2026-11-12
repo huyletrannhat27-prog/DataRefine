@@ -1,18 +1,21 @@
 
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, statfs } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Worker } from 'node:worker_threads';
 import { MAX_DATASET_BYTES } from './tabular.mjs';
 
-const fileNames = { original: 'original', csv: 'result.csv', report: 'report.csv', details: 'details.json' };
+export const fileNames = {
+  original:'original', csv:'result.csv', report:'report.csv', details:'details.json',
+  train:'train.csv', validation:'validation.csv', test:'test.csv'
+};
 function error(status, message) {
   return Object.assign(new Error(message), { status });
 }
 
-export function createDatasetFiles(stateDir) {
+export function createDatasetFiles(stateDir, { databaseUrl, blobs } = {}) {
   const root = resolve(stateDir, 'datasets');
   function folder(id) {
     const resolved = resolve(root, id);
@@ -24,6 +27,7 @@ export function createDatasetFiles(stateDir) {
   async function save(id, body, length) {
     if (!body || length === 0) throw error(400, 'File không có dữ liệu.');
     if (length > MAX_DATASET_BYTES) throw error(413, 'File vượt giới hạn 10 GiB.');
+    if (blobs) return blobs.put(id,'original',body,{length,limit:MAX_DATASET_BYTES,required:true});
     const dir = folder(id);
     await mkdir(dir, { recursive: true });
     const temporary = join(dir, 'upload.part');
@@ -51,10 +55,10 @@ export function createDatasetFiles(stateDir) {
       throw cause;
     }
   }
-  function run(job, profiles) {
+  function run(job, profiles, task = 'clean') {
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL('./dataset-worker.mjs', import.meta.url), {
-        workerData: { dir: folder(job.id), format: job.format, bytes: job.bytes, profiles }
+        workerData: { id:job.id, dir:folder(job.id), format:job.format, bytes:job.bytes, profiles, databaseUrl, task }
       });
       let result;
       worker.on('message', message => {
@@ -72,12 +76,26 @@ export function createDatasetFiles(stateDir) {
   return {
     save, run,
     progress: id => progress.get(id),
-    discard: id => rm(folder(id), { recursive: true, force: true }),
-    async details(id) { return JSON.parse(await readFile(pathFor(id, 'details'), 'utf8')); },
+    discard: id => blobs ? blobs.discard(id) : rm(folder(id), { recursive: true, force: true }),
+    async details(id) {
+      if (blobs) return blobs.json(id,'details');
+      return JSON.parse(await readFile(pathFor(id, 'details'), 'utf8'));
+    },
+    async saveTraining(id, pair) {
+      const payload = JSON.stringify(pair);
+      if (blobs) return blobs.put(id,'training',[Buffer.from(payload)]);
+      await mkdir(folder(id),{recursive:true});
+      await writeFile(join(folder(id),'training.json'),payload,{encoding:'utf8',flag:'wx'});
+    },
+    async training(id) {
+      if (blobs) return blobs.json(id,'training');
+      return JSON.parse(await readFile(join(folder(id),'training.json'),'utf8'));
+    },
     async download(id, kind) {
+      if (blobs) return blobs.download(id,kind);
       const path = pathFor(id, kind);
       const { size } = await stat(path);
-      return { size, body: Readable.toWeb(createReadStream(path)) };
+      return { size, body: Readable.toWeb(createReadStream(path),{ strategy:{ highWaterMark:256 * 1024, size:chunk => chunk.byteLength } }) };
     }
   };
 }

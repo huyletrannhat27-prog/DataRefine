@@ -23,30 +23,40 @@ const secret = configuredAdmin || randomBytes(12).toString('hex');
 
 const stateDir = resolve(process.env.DATAREFINE_STATE_DIR ?? fileURLToPath(new URL('./.datarefine/', import.meta.url)));
 mkdirSync(stateDir, {recursive:true});
-const stateFile = join(stateDir,'state.json');
-let state;
-try { state = readFileSync(stateFile,'utf8'); }
-catch (error) {
-  if (error.code !== 'ENOENT') throw error;
-  state = JSON.stringify(seedState());
-}
-let revision = 0;
-const storage = {
-  read() { return {state:JSON.parse(state), revision}; },
-  write(serialized, expected) {
-    if (revision !== expected) return false;
-    const pending = stateFile + '.tmp';
-    writeFileSync(pending,serialized,'utf8');
-    renameSync(pending,stateFile);
-    state = serialized;
-    revision++;
-    return true;
+function createLocalState() {
+  const stateFile = join(stateDir,'state.json');
+  let state;
+  try { state = readFileSync(stateFile,'utf8'); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    state = JSON.stringify(seedState());
   }
-};
+  let revision = 0;
+  return {
+    read() { return {state:JSON.parse(state), revision}; },
+    write(serialized, expected) {
+      if (revision !== expected) return false;
+      const pending = stateFile + '.tmp';
+      writeFileSync(pending,serialized,'utf8');
+      renameSync(pending,stateFile);
+      state = serialized;
+      revision++;
+      return true;
+    }
+  };
+}
+
 const asset = (file, type) => ({body:readFileSync(new URL('./public/' + file,import.meta.url),'utf8'), type:type + '; charset=utf-8'});
 const index = asset('index.html','text/html');
 const assets = { '/':index, '/admin':index, '/ui.js':asset('ui.js','text/javascript'), '/style.css':asset('style.css','text/css') };
-const app = createApp(storage, assets, secret, createDatasetFiles(stateDir));
+const databaseUrl = process.env.DATABASE_URL?.trim();
+let storage, blobs;
+if (databaseUrl) {
+  const { openPostgres, createPostgresState, createPostgresFiles } = await import('./postgres.mjs');
+  storage = await createPostgresState(openPostgres(databaseUrl), seedState());
+  blobs = createPostgresFiles(openPostgres(databaseUrl, 8));
+} else storage = createLocalState();
+const app = createApp(storage, assets, secret, createDatasetFiles(stateDir, { databaseUrl, blobs }));
 // Large uploads can take more than the default five minutes; idle sockets still expire.
 const server = createServer({ requestTimeout:0 }, async (req, res) => {
   try {
@@ -56,7 +66,7 @@ const server = createServer({ requestTimeout:0 }, async (req, res) => {
     if (url.origin !== base) { res.writeHead(400).end(); return; }
     const request = new Request(url, {
       method:req.method, headers:req.headers,
-      ...(['GET','HEAD'].includes(req.method) ? {} : {body:Readable.toWeb(req), duplex:'half'})
+      ...(['GET','HEAD'].includes(req.method) ? {} : {body:Readable.toWeb(req,{ strategy:{ highWaterMark:256 * 1024, size:chunk => chunk.byteLength } }), duplex:'half'})
     });
     const response = await app(request);
     const headers = Object.fromEntries(response.headers);
@@ -74,5 +84,6 @@ const server = createServer({ requestTimeout:0 }, async (req, res) => {
 server.setTimeout(120_000, socket => socket.destroy());
 server.listen(port,hostname,() => {
   console.log('DataRefine: ' + (externalOrigin ?? ('http://127.0.0.1:' + server.address().port)));
+  console.log('DataRefine storage: ' + (databaseUrl ? 'PostgreSQL' : 'local files'));
   if (!configuredAdmin) console.log('Ma quan tri (admin): ' + secret);
 });

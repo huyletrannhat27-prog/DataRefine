@@ -72,11 +72,18 @@ function valueAt(table, row, column) {
   return dayColumn.test(column) ? normalDate(value) ?? '' : value;
 }
 
+export function createTrainingRecordKey(headers) {
+  const ordered = [...headers].sort();
+  const table = { headers };
+  return row => JSON.stringify(ordered.map(col => valueAt(table,row,col)));
+}
+
 function examples(table, target, features) {
+  const key = createTrainingRecordKey(table.headers);
   return table.rows.map(row => ({
     x: features.map(col => valueAt(table, row, col)),
     y: number(valueAt(table, row, target)),
-    record: JSON.stringify(table.headers.slice().sort().map(col => valueAt(table, row, col)))
+    record: key(row)
   })).filter(s => Number.isFinite(s.y) && s.x.every(v => !blank(v)));
 }
 
@@ -156,6 +163,20 @@ export function fitProfile({ label, target, featureNames, train, validate, curre
     metrics: { mae: round(mae, 3), baseline: round(baseline, 3), previous: previous === null ? null : round(previous, 3),
       coverage: round(coverage * 100, 1), train: all.length, test: check.length, eligible }
   };
+}
+
+export function evaluateHoldout(profile, table) {
+  const { target, model } = profile;
+  const features = model.features.map(f => f.name);
+  const rows = [...new Map(examples(table,target,features).map(row => [row.record,row])).values()];
+  if (rows.length < 5) throw Error('Tập test cần tối thiểu 5 bản ghi khác nhau có đủ cột mục tiêu và cột đầu vào.');
+  let error = 0, predicted = 0;
+  for (const row of rows) {
+    const value = infer(model,row.x);
+    if (value !== null) predicted++;
+    error += Math.abs((value ?? model.median) - row.y);
+  }
+  return { rows:rows.length, mae:round(error / rows.length,3), coverage:round(predicted * 100 / rows.length,1) };
 }
 
 export function createRowProcessor(headers, profile, isDuplicate) {

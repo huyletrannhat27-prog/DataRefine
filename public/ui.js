@@ -4,7 +4,7 @@ const adminPage = location.pathname === '/admin';
 const main = $('main');
 const dialog = $('dialog');
 const view = adminPage ? '?view=admin' : '';
-const page = { state: null, training: '', validation: '', busy: false, active: false };
+const page = { state: null, training: '', validation: '', split: null, busy: false, active: false };
 const label = { done:'Đã xử lý', review:'Cần kiểm tra', waiting:'Chờ hỗ trợ', processing:'Đang xử lý', failed:'Lỗi xử lý' };
 const hasCsv = job => job.status === 'done' || job.status === 'review';
 const hasReport = job => hasCsv(job) || job.status === 'waiting';
@@ -122,10 +122,10 @@ function workspace() {
     if (chosen.length) void uploadBatch(chosen);
   };
 }
-function sendDataset(file, onProgress) {
+function sendDataset(file, onProgress, endpoint = '/api/jobs/upload') {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open('POST', '/api/jobs/upload?' + new URLSearchParams({ name:file.name }));
+    request.open('POST', endpoint + '?' + new URLSearchParams({ name:file.name }));
     request.setRequestHeader('Content-Type','application/octet-stream');
     request.responseType = 'json';
     request.upload.onprogress = event => {
@@ -197,19 +197,48 @@ function admin() {
     '<div class="grid"><div class="sublist"><section class="panel"><div class="section-top"><div><h2>Hàng chờ xử lý</h2><p>File chưa được hỗ trợ hoặc còn lỗi cần kiểm tra</p></div></div><div class="sublist" id="queue"></div></section>' +
     '<section class="panel"><div class="section-top"><div><h2>Mô hình đang dùng</h2><p>Mô hình KNN cho từng cấu trúc CSV</p></div></div><div class="sublist" id="models"></div></section></div>' +
     '<section class="panel"><div class="section-top"><div><h2>Huấn luyện mô hình</h2><p>Dùng các mẫu có giá trị đã được xác minh.</p></div></div>' +
+    '<form id="split-form" class="train-form"><label class="field">Dataset để tự chia train / validation / test' +
+    '<input id="split-file" type="file" required accept=".csv,.tsv,.txt,.jsonl,.ndjson"><span class="muted">Một file UTF-8, tối đa 10 GiB.</span></label>' +
+    '<div class="row"><button class="button" id="split-submit">Tải lên và chia 70 / 15 / 15</button></div>' +
+    '<progress id="split-progress" class="upload-progress" max="100" aria-label="Tiến độ tải dataset" hidden></progress>' +
+    '<div class="status-text" id="split-status" role="status"></div></form>' +
     '<form id="train-form" class="train-form"><label class="field">Tên dạng dữ liệu<input id="model-label" required maxlength="60" placeholder="Ví dụ: Kho hàng"></label>' +
+    '<p id="selected-split" class="muted" hidden></p>' +
+    '<details class="details" id="manual-training"><summary>Nhập hai file CSV nhỏ</summary>' +
     '<label class="field">CSV huấn luyện<input type="file" id="train-file" accept=".csv,text/csv"><span id="train-name" class="muted"></span></label>' +
-    '<label class="field">CSV kiểm thử riêng<input type="file" id="test-file" accept=".csv,text/csv"><span id="test-name" class="muted"></span></label>' +
+    '<label class="field">CSV validation<input type="file" id="test-file" accept=".csv,text/csv"><span id="test-name" class="muted"></span></label></details>' +
     '<label class="field">Cột số cần điền<select id="target" required><option value="">Chọn CSV huấn luyện trước</option></select></label>' +
     '<fieldset id="feature-box" hidden><legend>Cột dùng để ước lượng</legend><div id="features" class="check-list"></div></fieldset>' +
     '<div class="row"><button class="button" id="train-button" disabled>Huấn luyện và đánh giá</button><button class="button neutral" id="sample-model" type="button">Dùng mẫu kho hàng</button></div>' +
     '<div class="status-text" id="train-status" role="status"></div></form>' +
-    '<details class="details"><summary>Yêu cầu dữ liệu và tiêu chí kích hoạt</summary><p>Cần từ 12 mẫu train và 5 mẫu kiểm thử có giá trị thật. MAE phải bằng hoặc thấp hơn phương pháp trung vị và mô hình đang dùng (nếu có). Mô hình phải ước lượng được ít nhất 60% mẫu kiểm thử.</p>' +
+    '<details class="details"><summary>Yêu cầu dữ liệu và tiêu chí kích hoạt</summary><p>Cần ít nhất 12 dòng train và 5 dòng validation có giá trị thật. Nếu dùng dataset tự chia, tập test cũng cần ít nhất 5 dòng hợp lệ. MAE phải bằng hoặc thấp hơn phương pháp trung vị và mô hình đang dùng (nếu có). Mô hình phải ước lượng được ít nhất 60% mẫu validation.</p>' +
     '<p><a href="/samples/kho-huan-luyen.csv">Tải CSV huấn luyện mẫu</a> · <a href="/samples/kho-kiem-thu.csv">Tải CSV kiểm thử mẫu</a></p></details></section></div>' +
+    '<section class="panel gap"><div class="section-top"><div><h2>Dataset huấn luyện đã lưu</h2><p>Tải từng tập CSV hoặc chọn dataset để huấn luyện.</p></div></div>' +
+    '<div class="sublist" id="split-library"></div><div class="sublist gap" id="training-library"></div></section>' +
     '<section class="panel gap"><div class="section-top"><div><h2>Kết quả huấn luyện</h2><p>Kích hoạt sẽ tự chạy lại file đang chờ có cùng cấu trúc.</p></div></div><div class="sublist" id="drafts"></div></section>';
   $('logout').onclick = async () => {
-    try { await api('admin/logout', {}); page.training = ''; page.validation = ''; login(); }
+    try { await api('admin/logout', {}); page.training = ''; page.validation = ''; page.split = null; login(); }
     catch (e) { toast(e.message); }
+  };
+  $('split-form').onsubmit = async event => {
+    event.preventDefault();
+    const file = $('split-file').files[0];
+    if (!file || !file.size || file.size > maxDatasetSize || !/\.(csv|tsv|txt|jsonl|ndjson)$/i.test(file.name)) {
+      showStatus('split-status','Chọn một dataset CSV, TSV, TXT, JSONL hoặc NDJSON từ 1 byte đến 10 GiB.',true);
+      return;
+    }
+    const button = $('split-submit'), bar = $('split-progress');
+    button.disabled = true;
+    bar.hidden = false;
+    bar.value = 0;
+    showStatus('split-status','Đang tải ' + file.name + '…');
+    try {
+      await sendDataset(file,percent => { bar.value = percent; },'/api/admin/training-upload');
+      $('split-file').value = '';
+      await refresh();
+      showStatus('split-status','Đã nhận file. Theo dõi tiến độ ở Dataset huấn luyện đã lưu.');
+    } catch (error) { showStatus('split-status',error.message,true); }
+    finally { button.disabled = false; bar.hidden = true; }
   };
   $('train-file').onchange = async () => {
     const file = $('train-file').files[0];
@@ -237,8 +266,8 @@ function admin() {
     $('train-button').disabled = true;
     showStatus('train-status', 'Đang huấn luyện và đánh giá…');
     try {
-      const draft = await api('admin/train', {label:$('model-label').value, target:$('target').value, features,
-        training:page.training, validation:page.validation});
+      const source = page.split ? { splitId:page.split } : { training:page.training, validation:page.validation };
+      const draft = await api('admin/train', {label:$('model-label').value, target:$('target').value, features,...source});
       await refresh();
       showStatus('train-status', draft.metrics.eligible ? 'Đánh giá hoàn tất. Có thể kích hoạt ở mục Kết quả huấn luyện.' : 'Mô hình chưa đạt tiêu chí kích hoạt.');
     } catch (e) { showStatus('train-status', e.message, true); }
@@ -246,7 +275,7 @@ function admin() {
   };
 }
 function toggleTrain() {
-  $('train-button').disabled = !(page.training && page.validation && $('target').value);
+  $('train-button').disabled = !((page.split || (page.training && page.validation)) && $('target').value);
 }
 function updateFeatures() {
   for (const input of $('features').querySelectorAll('input')) {
@@ -257,7 +286,19 @@ function updateFeatures() {
   }
   toggleTrain();
 }
+function populateTrainingColumns(headers, selected = '') {
+  $('target').innerHTML = headers.map(c => '<option value="' + esc(c) + '">' + esc(c) + '</option>').join('');
+  $('target').value = selected && headers.includes(selected) ? selected : headers.at(-1);
+  $('features').innerHTML = headers.map(c => '<label><input type="checkbox" checked value="' + esc(c) + '">' + esc(c) + '</label>').join('');
+  $('feature-box').hidden = false;
+  updateFeatures();
+}
+function clearSplit() {
+  page.split = null;
+  $('selected-split').hidden = true;
+}
 async function setupTraining(read, name, selected = '') {
+  clearSplit();
   page.training = '';
   toggleTrain();
   $('train-name').textContent = '';
@@ -265,10 +306,7 @@ async function setupTraining(read, name, selected = '') {
   try {
     const csv = await read();
     const result = await api('admin/headers', {csv});
-    $('target').innerHTML = result.headers.map(c => '<option value="' + esc(c) + '">' + esc(c) + '</option>').join('');
-    $('target').value = selected && result.headers.includes(selected) ? selected : result.headers.at(-1);
-    $('features').innerHTML = result.headers.map(c => '<label><input type="checkbox" checked value="' + esc(c) + '">' + esc(c) + '</label>').join('');
-    $('feature-box').hidden = false;
+    populateTrainingColumns(result.headers,selected);
     $('train-name').textContent = name;
     page.training = csv;
     showStatus('train-status', '');
@@ -276,24 +314,51 @@ async function setupTraining(read, name, selected = '') {
   updateFeatures();
 }
 async function setupValidation(read, name) {
+  clearSplit();
   page.validation = '';
   $('test-name').textContent = '';
   try { page.validation = await read(); $('test-name').textContent = name; }
   catch (e) { showStatus('train-status', e.message, true); }
   toggleTrain();
 }
+function renderTrainingLibrary(state) {
+  const groups = ['train','validation','test'];
+  const imports = state.trainingImports ?? [];
+  $('split-library').innerHTML = imports.length ? imports.map(item => {
+    const base = '/api/admin/training-imports/' + encodeURIComponent(item.id) + '/';
+    const counts = item.counts ? '<p>' + groups.map(group => esc(group) + ' ' + item.counts[group]).join(' · ') + ' bản ghi</p>' : '';
+    const sampleInfo = item.sampled ? '<p>Số dòng lấy mẫu cho KNN: ' + groups.map(group =>
+      esc(group) + ' ' + item.sampled[group]).join(' · ') + '</p>' : '';
+    const actions = item.status === 'done' ? groups.map(group => link(base + group,'Tải ' + group)).join('') +
+      '<button class="button" data-use-split="' + esc(item.id) + '">Dùng để huấn luyện</button>' : '';
+    return '<article class="subitem"><div class="section-top"><div><h3>' + esc(item.name) + '</h3><p>' +
+      esc(item.format) + ' · ' + formatSize(item.bytes) + '</p></div>' +
+      (item.status === 'done' ? chip('Đã chia') : status(item)) + '</div>' +
+      counts + sampleInfo + (item.error ? '<p class="error">' + esc(item.error) + '</p>' : '') +
+      '<div class="row">' + link(base + 'original','Tải file gốc') + actions + '</div></article>';
+  }).join('') : empty('Chưa có dataset nào được chia.');
+  $('training-library').innerHTML = (state.trainingSets ?? []).map(set =>
+    '<article class="subitem"><h3>' + esc(set.label) + '</h3><p>CSV lưu từ lần huấn luyện · ' +
+    set.trainRows + ' dòng train · ' + set.validationRows + ' dòng validation</p>' +
+    '<div class="row"><button class="button neutral" data-use-archive="' + esc(set.id) + '">Nạp lại vào form</button></div></article>'
+  ).join('');
+}
+
 function renderAdmin(state) {
+  renderTrainingLibrary(state);
   const queue = state.jobs.filter(j => j.status === 'waiting' || j.status === 'review');
   $('queue').innerHTML = queue.length ? queue.map(j => '<article class="subitem"><h3>' + esc(j.name) + '</h3><p>' +
     esc(j.headers.join(' · ')) + '</p><div class="row">' + status(j) + detailButton(j) + '</div></article>').join('') : empty('Không có file nào cần admin xử lý.');
   $('models').innerHTML = state.profiles.map(p => '<article class="subitem"><div class="section-top"><h3>' + esc(p.label) + '</h3>' +
     chip('v' + p.version) + '</div><p>Điền cột <b>' + esc(p.target) + '</b> · MAE ' + esc(p.metrics.mae) + ' · ' +
-    esc(p.metrics.coverage) + '% mẫu kiểm thử được ước lượng</p><p>' + esc(p.headers.join(' · ')) + '</p></article>').join('');
+    esc(p.metrics.coverage) + '% mẫu validation được ước lượng</p><p>' + esc(p.headers.join(' · ')) + '</p></article>').join('');
   $('drafts').innerHTML = state.drafts.length ? state.drafts.map(p => '<article class="subitem"><div class="section-top"><div><h3>' +
-    esc(p.label) + ' · v' + esc(p.version) + '</h3><p>' + p.metrics.train + ' mẫu train · ' + p.metrics.test + ' mẫu kiểm thử</p></div>' +
+    esc(p.label) + ' · v' + esc(p.version) + '</h3><p>' + p.metrics.train + ' mẫu train · ' + p.metrics.test + ' mẫu validation</p></div>' +
     chip(p.metrics.eligible ? 'Đạt tiêu chí' : 'Chưa đạt', p.metrics.eligible ? '' : 'warning') + '</div>' +
     metrics([p.metrics.mae,'MAE mô hình'], [p.metrics.baseline,'MAE trung vị'], [p.metrics.coverage + '%','Tỷ lệ ước lượng']) +
-    (p.metrics.previous === null ? '' : '<p>MAE mô hình hiện tại trên cùng tập kiểm thử: ' + esc(p.metrics.previous) + '</p>') +
+    (p.metrics.previous === null ? '' : '<p>MAE mô hình hiện tại trên cùng tập validation: ' + esc(p.metrics.previous) + '</p>') +
+    (p.metrics.holdout ? '<p><b>Test riêng:</b> MAE ' + esc(p.metrics.holdout.mae) + ' · ' +
+      esc(p.metrics.holdout.coverage) + '% ước lượng được · ' + esc(p.metrics.holdout.rows) + ' bản ghi</p>' : '') +
     '<div class="row"><button class="button" data-activate="' + esc(p.id) + '"' + (p.metrics.eligible ? '' : ' disabled') + '>Kích hoạt</button></div></article>').join('') : empty('Chưa có kết quả huấn luyện mới.');
 }
 function renderUser(state) {
@@ -336,7 +401,7 @@ async function jobDetails(id) {
 }
 
 document.addEventListener('click', async event => {
-  const btn = event.target.closest('button[data-job],button[data-sample],button[data-activate],button[data-resolve]');
+  const btn = event.target.closest('button[data-job],button[data-sample],button[data-activate],button[data-resolve],button[data-use-split],button[data-use-archive]');
   if (!btn) return;
   if (btn.dataset.job) return jobDetails(btn.dataset.job);
   if (btn.dataset.sample) {
@@ -345,6 +410,40 @@ document.addEventListener('click', async event => {
       const name = btn.dataset.sample;
       await uploadBatch([new File([await sample(name)], name)]);
     } catch (error) { toast(error.message); }
+    return;
+  }
+  if (btn.dataset.useSplit) {
+    const item = page.state.trainingImports.find(record => record.id === btn.dataset.useSplit && record.status === 'done');
+    if (!item) return;
+    page.split = item.id;
+    page.training = '';
+    page.validation = '';
+    $('train-file').value = '';
+    $('test-file').value = '';
+    $('train-name').textContent = '';
+    $('test-name').textContent = '';
+    $('manual-training').open = false;
+    $('model-label').value = item.name.replace(/\.[^.]+$/,'').slice(0,60);
+    $('selected-split').textContent = 'Đang dùng dataset đã chia: ' + item.name;
+    $('selected-split').hidden = false;
+    populateTrainingColumns(item.headers);
+    showStatus('train-status','Chọn cột số cần điền và các cột đầu vào.');
+    $('target').focus();
+    return;
+  }
+  if (btn.dataset.useArchive) {
+    btn.disabled = true;
+    try {
+      const saved = await api('admin/training-sets/' + encodeURIComponent(btn.dataset.useArchive));
+      $('manual-training').open = true;
+      $('train-file').value = '';
+      $('test-file').value = '';
+      $('model-label').value = saved.label;
+      await setupTraining(() => saved.training,'CSV train đã lưu');
+      await setupValidation(() => saved.validation,'CSV validation đã lưu');
+      $('target').focus();
+    } catch (error) { toast(error.message); }
+    finally { btn.disabled = false; }
     return;
   }
   btn.disabled = true;

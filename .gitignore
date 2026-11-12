@@ -1,2 +1,4 @@
 /.datarefine/
 /node_modules/
+/.env
+/.env.*
